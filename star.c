@@ -23,7 +23,6 @@ typedef struct {
     size_t num_files;
     size_t free_blocks[MAX_BLOCKS];
     size_t num_free_blocks;
-    size_t total_blocks;
 } FAT;
 
 typedef struct {
@@ -156,7 +155,7 @@ void create_archive(struct Flags flags) {
                 }
             }
 
-            if (flags.verbose) printf("Tamaño del archivo %s: %zu bytes\n", flags.inputFiles[i], file_size + sizeof(Block));
+            if (flags.verbose) printf("Tamaño del archivo %s: %zu bytes\n", flags.inputFiles[i], file_size);
 
             fclose(input_file);
         }
