@@ -8,7 +8,7 @@
 #define BLOCK_SIZE 256 * 1024 // 256 KB
 #define MAX_FILES 100 
 #define MAX_FILENAME_LENGTH 256
-#define MAX_BLOCKS_PER_FILE 1024
+#define MAX_BLOCKS_PER_FILE 64 
 #define MAX_BLOCKS MAX_BLOCKS_PER_FILE * MAX_FILES
 
 typedef struct {
@@ -23,6 +23,7 @@ typedef struct {
     size_t num_files;
     size_t free_blocks[MAX_BLOCKS];
     size_t num_free_blocks;
+    size_t total_blocks;
 } FAT;
 
 typedef struct {
@@ -46,6 +47,154 @@ struct Flags {
     int numInputFiles;
 };
 
+size_t find_free_block(FAT *fat) {
+    for (size_t i = 0; i < fat->num_free_blocks; i++) {
+        // NOTA: num_free_blocks solo implica el rango de bloques libres, no necesariamente que todos los bloques estén libres
+        if (fat->free_blocks[i] != 0) {
+            size_t free_block = fat->free_blocks[i]; // obtener el bloque libre
+            fat->free_blocks[i] = 0; // marcar el bloque como ocupado
+            return free_block;
+        }
+    }
+    return (size_t)-1; // si no se ha encontrado ningun bloque libre
+}
+
+void expand_archive(FILE *archive, FAT *fat) {
+    fseek(archive, 0, SEEK_END); // mover el puntero al final del archivo
+    size_t current_size = ftell(archive); // obtener la posición actual del puntero (tamaño del archivo)
+    size_t expanded_size = current_size + BLOCK_SIZE; // tamaño del archivo expandido (+256KB)
+    ftruncate(fileno(archive), expanded_size); // expandir el archivo
+    fat->free_blocks[fat->num_free_blocks++] = current_size; 
+    // meter el bloque libre a la lista secuencial de bloques libres 
+}
+
+void write_block(FILE *archive, Block *block, size_t position) {
+    fseek(archive, position, SEEK_SET); // conseguir la posicion marcada por el indice del bloque libre
+    fwrite(block, sizeof(Block), 1, archive); // escribir los 256KB del bloque en el archivo
+}
+
+void update_fat(FAT *fat, const char *filename, size_t file_size, size_t block_position) {
+    for (size_t i = 0; i < fat->num_files; i++) { // por cada archivo en el FAT
+        if (strcmp(fat->files[i].filename, filename) == 0) { // si el archivo ya esta en el FAT
+            fat->files[i].block_positions[fat->files[i].num_blocks++] = block_position;  // añadir la nueva posicion del bloque al archivo
+            fat->files[i].file_size += sizeof(Block); // incrementar el tamaño del archivo
+            return; // salir
+        }
+    }
+
+    // si no hay una entrada para el archivo en el FAT
+    FileEntry new_entry;
+    strncpy(new_entry.filename, filename, MAX_FILENAME_LENGTH); // copiar el nombre del archivo a la nueva entrada
+    new_entry.file_size = file_size + sizeof(Block); // tamaño del archivo
+    new_entry.block_positions[0] = block_position; // posición del bloque
+    new_entry.num_blocks = 1; // número de bloques
+    fat->files[fat->num_files++] = new_entry; // añadir la nueva entrada al FAT
+}
+
+void write_fat(FILE *archive, FAT *fat) {
+    fseek(archive, 0, SEEK_SET); // mover el puntero al inicio del archivo
+    fwrite(fat, sizeof(FAT), 1, archive); // escribir la FAT en el archivo en la posición 0
+    // NOTA: implica que los indices de los bloques libres y bloques ocupados son despues de la FAT
+}
+
+
+void create_archive(struct Flags flags) {
+    if (flags.verbose) printf("Creando archivo %s\n", flags.outputFile);
+    FILE *archive = fopen(flags.outputFile, "wb"); // abrir archivo como binario para escritura
+
+    if (archive == NULL) {
+        fprintf(stderr, "Error al abrir el archivo %s\n", flags.outputFile);
+        exit(1);
+    }
+
+    FAT fat; 
+    memset(&fat, 0, sizeof(FAT)); // inicializa FAT con 0s 
+
+    if (flags.file && flags.numInputFiles > 0) {
+        // si se me pasan archivos
+        for (int i = 0; i < flags.numInputFiles; i++) {
+            FILE *input_file = fopen(flags.inputFiles[i], "rb"); // abrir archivo como binario para lectura
+            if (input_file == NULL) {
+                fprintf(stderr, "Error al abrir el archivo %s\n", flags.inputFiles[i]);
+                exit(1);
+            }
+
+            if (flags.verbose) printf("Agregando archivo %s\n", flags.inputFiles[i]);
+            size_t file_size = 0; 
+            size_t block_count = 0; 
+            Block block; 
+            size_t bytes_read; 
+
+            while ((bytes_read = fread(&block, 1, sizeof(Block), input_file)) > 0) {
+                // mientras que pueda leer un bloque del archivo
+                size_t block_position = find_free_block(&fat); // indice del bloque libre
+                if (block_position == (size_t)-1) {
+                    // si no hay bloques libres 
+                    if (flags.veryVerbose) {
+                        printf("No hay bloques libres, expandiendo el archivo\n");
+                    }
+                    expand_archive(archive, &fat); // expandir el archivo
+                    block_position = find_free_block(&fat); 
+                    if (flags.veryVerbose) {
+                        printf("Nuevo bloque libre en la posición %zu\n", block_position);
+                    }
+                }
+
+                if (bytes_read < sizeof(Block)) {
+                    // si no se lee un bloque completo
+                    memset((char*)&block + bytes_read, 0, sizeof(Block) - bytes_read); // rellenar con 0s
+                }
+
+                write_block(archive, &block, block_position); // escribir el bloque en el archivo
+                update_fat(&fat, flags.inputFiles[i], file_size, block_position); // actualizar la FAT para que refleje el nuevo bloque
+
+                file_size += sizeof(Block);
+                block_count++;
+
+                if (flags.veryVerbose) {
+                    printf("Escribiendo bloque %zu para archivo %s\n", block_position, flags.inputFiles[i]);
+                }
+            }
+
+            if (flags.verbose) printf("Tamaño del archivo %s: %zu bytes\n", flags.inputFiles[i], file_size + sizeof(Block));
+
+            fclose(input_file);
+        }
+    } else {
+        if (flags.verbose) {
+            printf("Leyendo datos desde la entrada estándar (stdin)\n");
+        }
+
+        size_t file_size = 0;
+        size_t block_count = 0;
+        Block block;
+        size_t bytes_read;
+        while ((bytes_read = fread(&block, 1, sizeof(Block), stdin)) > 0) {
+            size_t block_position = find_free_block(&fat);
+            if (block_position == (size_t)-1) {
+                expand_archive(archive, &fat);
+                block_position = find_free_block(&fat);
+            }
+
+            if (bytes_read < sizeof(Block)) {
+                memset((char*)&block + bytes_read, 0, sizeof(Block) - bytes_read);
+            }
+
+            write_block(archive, &block, block_position);
+            update_fat(&fat, "stdin", file_size, block_position);
+
+            file_size += sizeof(Block);
+            block_count++;
+
+            if (flags.veryVerbose) {
+                printf("Bloque %zu leído desde stdin y escrito en la posición %zu\n", block_count, block_position);
+            }
+        }
+    }
+
+    write_fat(archive, &fat);
+    fclose(archive);
+}
 
 int main(int argc, char *argv[]) {
     struct Flags flags = {false, false, false, false, false, false, false, false, false, false, NULL, NULL, 0};
@@ -111,6 +260,7 @@ int main(int argc, char *argv[]) {
         flags.inputFiles = &argv[optind];
     }
 
+    if (flags.create) create_archive(flags); 
 
     return 0;
 }
