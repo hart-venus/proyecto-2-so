@@ -72,11 +72,11 @@ void write_block(FILE *archive, Block *block, size_t position) {
     fwrite(block, sizeof(Block), 1, archive); // escribir los 256KB del bloque en el archivo
 }
 
-void update_fat(FAT *fat, const char *filename, size_t file_size, size_t block_position) {
+void update_fat(FAT *fat, const char *filename, size_t file_size, size_t block_position, size_t bytes_read) {
     for (size_t i = 0; i < fat->num_files; i++) { // por cada archivo en el FAT
         if (strcmp(fat->files[i].filename, filename) == 0) { // si el archivo ya esta en el FAT
             fat->files[i].block_positions[fat->files[i].num_blocks++] = block_position;  // añadir la nueva posicion del bloque al archivo
-            fat->files[i].file_size += sizeof(Block); // incrementar el tamaño del archivo
+            fat->files[i].file_size += bytes_read; // incrementar el tamaño del archivo
             return; // salir
         }
     }
@@ -84,7 +84,7 @@ void update_fat(FAT *fat, const char *filename, size_t file_size, size_t block_p
     // si no hay una entrada para el archivo en el FAT
     FileEntry new_entry;
     strncpy(new_entry.filename, filename, MAX_FILENAME_LENGTH); // copiar el nombre del archivo a la nueva entrada
-    new_entry.file_size = file_size + sizeof(Block); // tamaño del archivo
+    new_entry.file_size = file_size + bytes_read; // tamaño del archivo
     new_entry.block_positions[0] = block_position; // posición del bloque
     new_entry.num_blocks = 1; // número de bloques
     fat->files[fat->num_files++] = new_entry; // añadir la nueva entrada al FAT
@@ -150,9 +150,9 @@ void create_archive(struct Flags flags) {
                 }
 
                 write_block(archive, &block, block_position); // escribir el bloque en el archivo
-                update_fat(&fat, flags.inputFiles[i], file_size, block_position); // actualizar la FAT para que refleje el nuevo bloque
+                update_fat(&fat, flags.inputFiles[i], file_size, block_position, bytes_read); // actualizar la FAT para que refleje el nuevo bloque
 
-                file_size += sizeof(Block);
+                file_size += bytes_read;
                 block_count++;
 
                 if (flags.veryVerbose) {
@@ -185,9 +185,9 @@ void create_archive(struct Flags flags) {
             }
 
             write_block(archive, &block, block_position);
-            update_fat(&fat, "stdin", file_size, block_position);
+            update_fat(&fat, "stdin", file_size, block_position, bytes_read);
 
-            file_size += sizeof(Block);
+            bytes_read += sizeof(Block);
             block_count++;
 
             if (flags.veryVerbose) {
@@ -228,7 +228,7 @@ void extract_archive(const char *archive_name, bool verbose, bool very_verbose) 
             fseek(archive, entry.block_positions[j], SEEK_SET);
             fread(&block, sizeof(Block), 1, archive);
 
-            size_t bytes_to_write = (file_size + sizeof(Block) <= entry.file_size) ? sizeof(Block) : entry.file_size - file_size;
+            size_t bytes_to_write = (file_size + sizeof(Block) > entry.file_size) ? entry.file_size - file_size : sizeof(Block);
             fwrite(&block, 1, bytes_to_write, output_file);
 
             file_size += bytes_to_write;
