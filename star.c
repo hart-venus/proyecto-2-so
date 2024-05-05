@@ -406,6 +406,64 @@ void update_files_in_archive(const char *archive_name, char **filenames, int num
     fclose(archive);
 }
 
+void defragment_archive(const char *archive_name, bool verbose, bool very_verbose) {
+    FILE *archive = fopen(archive_name, "rb+");
+    if (archive == NULL) {
+        fprintf(stderr, "Error al abrir el archivo empacado.\n");
+        return;
+    }
+
+    FAT fat;
+    fread(&fat, sizeof(FAT), 1, archive);
+
+    size_t new_block_position = sizeof(FAT);
+    for (size_t i = 0; i < fat.num_files; i++) {
+        FileEntry *entry = &fat.files[i];
+        size_t file_size = 0;
+
+        for (size_t j = 0; j < entry->num_blocks; j++) {
+            Block block;
+            fseek(archive, entry->block_positions[j], SEEK_SET);
+            fread(&block, sizeof(Block), 1, archive);
+
+            fseek(archive, new_block_position, SEEK_SET);
+            fwrite(&block, sizeof(Block), 1, archive);
+
+            entry->block_positions[j] = new_block_position;
+            new_block_position += sizeof(Block);
+            file_size += sizeof(Block);
+
+            if (very_verbose) {
+                printf("Bloque %zu del archivo '%s' movido a la posición %zu\n", j + 1, entry->filename, entry->block_positions[j]);
+            }
+        }
+
+        // no actualizar tamanio entry->file_size = file_size;
+
+        if (verbose) {
+            printf("Archivo '%s' desfragmentado.\n", entry->filename);
+        }
+    }
+
+    // Actualizar la estructura FAT con los nuevos bloques libres
+    fat.num_free_blocks = 0;
+    size_t remaining_space = new_block_position;
+    while (remaining_space < fat.free_blocks[fat.num_free_blocks - 1]) {
+        fat.free_blocks[fat.num_free_blocks++] = remaining_space;
+        remaining_space += sizeof(Block);
+    }
+
+    // Escribir la estructura FAT actualizada en el archivo
+    fseek(archive, 0, SEEK_SET);
+    fwrite(&fat, sizeof(FAT), 1, archive);
+
+    // Truncar el archivo para eliminar el espacio no utilizado
+    ftruncate(fileno(archive), new_block_position);
+
+    fclose(archive);
+}
+
+
 void append_files_to_archive(const char *archive_name, char **filenames, int num_files, bool verbose, bool very_verbose) {
     FILE *archive = fopen(archive_name, "rb+");
     if (archive == NULL) {
@@ -562,6 +620,7 @@ int main(int argc, char *argv[]) {
     else if (flags.update) update_files_in_archive(flags.outputFile, flags.inputFiles, flags.numInputFiles, flags.verbose, flags.veryVerbose);
     else if (flags.append) append_files_to_archive(flags.outputFile, flags.inputFiles, flags.numInputFiles, flags.verbose, flags.veryVerbose);
 
+    if (flags.pack) defragment_archive(flags.outputFile, flags.verbose, flags.veryVerbose);
     if (flags.list) list_archive_contents(flags.outputFile, flags.verbose);
 
     return 0;
