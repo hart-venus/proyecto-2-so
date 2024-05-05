@@ -109,6 +109,11 @@ void create_archive(struct Flags flags) {
     FAT fat; 
     memset(&fat, 0, sizeof(FAT)); // inicializa FAT con 0s 
 
+    fat.free_blocks[0] = sizeof(FAT); // el primer bloque libre es despues de la FAT
+    fat.num_free_blocks = 1; // solo hay un bloque libre
+
+    fwrite(&fat, sizeof(FAT), 1, archive); // escribir la FAT en el archivo (posición 0
+
     if (flags.file && flags.numInputFiles > 0) {
         // si se me pasan archivos
         for (int i = 0; i < flags.numInputFiles; i++) {
@@ -195,6 +200,52 @@ void create_archive(struct Flags flags) {
     fclose(archive);
 }
 
+void extract_archive(const char *archive_name, bool verbose, bool very_verbose) {
+    FILE *archive = fopen(archive_name, "rb");
+    if (archive == NULL) {
+        fprintf(stderr, "Error al abrir el archivo empacado.\n");
+        return;
+    }
+
+    FAT fat;
+    fread(&fat, sizeof(FAT), 1, archive);
+
+    for (size_t i = 0; i < fat.num_files; i++) {
+        FileEntry entry = fat.files[i];
+        FILE *output_file = fopen(entry.filename, "wb");
+        if (output_file == NULL) {
+            fprintf(stderr, "Error al crear el archivo de salida: %s\n", entry.filename);
+            continue;
+        }
+
+        if (verbose) {
+            printf("Extrayendo archivo: %s\n", entry.filename);
+        }
+
+        size_t file_size = 0;
+        for (size_t j = 0; j < entry.num_blocks; j++) {
+            Block block;
+            fseek(archive, entry.block_positions[j], SEEK_SET);
+            fread(&block, sizeof(Block), 1, archive);
+
+            size_t bytes_to_write = (file_size + sizeof(Block) <= entry.file_size) ? sizeof(Block) : entry.file_size - file_size;
+            fwrite(&block, 1, bytes_to_write, output_file);
+
+            file_size += bytes_to_write;
+
+            if (very_verbose) {
+                printf("Bloque %zu del archivo %s extraído de la posición %zu\n", j + 1, entry.filename, entry.block_positions[j]);
+            }
+        }
+
+        fclose(output_file);
+    }
+
+    fclose(archive);
+}
+
+
+
 int main(int argc, char *argv[]) {
     struct Flags flags = {false, false, false, false, false, false, false, false, false, false, NULL, NULL, 0};
     int opt;
@@ -260,6 +311,7 @@ int main(int argc, char *argv[]) {
     }
 
     if (flags.create) create_archive(flags); 
+    else if (flags.extract) extract_archive(flags.outputFile, flags.verbose, flags.veryVerbose);
 
     return 0;
 }
