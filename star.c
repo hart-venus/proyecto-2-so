@@ -274,6 +274,57 @@ void extract_archive(const char *archive_name, bool verbose, bool very_verbose) 
     fclose(archive);
 }
 
+void delete_files_from_archive(const char *archive_name, char **filenames, int num_files, bool verbose, bool very_verbose) {
+    FILE *archive = fopen(archive_name, "rb+");
+    if (archive == NULL) {
+        fprintf(stderr, "Error al abrir el archivo empacado.\n");
+        return;
+    }
+
+    FAT fat;
+    fread(&fat, sizeof(FAT), 1, archive); // leer la FAT del archivo
+
+    for (int i = 0; i < num_files; i++) {
+        const char *filename = filenames[i]; // conseguir el nombre del archivo a borrar
+        bool file_found = false;
+
+        for (size_t j = 0; j < fat.num_files; j++) {
+            if (strcmp(fat.files[j].filename, filename) == 0) { // encontre el archivo
+                file_found = true;
+
+                // Marcar los bloques como libres
+                for (size_t k = 0; k < fat.files[j].num_blocks; k++) {
+                    fat.free_blocks[fat.num_free_blocks++] = fat.files[j].block_positions[k];
+                    if (very_verbose) {
+                        printf("Bloque %zu del archivo '%s' marcado como libre.\n", fat.files[j].block_positions[k], filename);
+                    }
+                }
+
+                // Eliminar la entrada del archivo del FAT
+                for (size_t k = j; k < fat.num_files - 1; k++) {
+                    fat.files[k] = fat.files[k + 1];
+                }
+                fat.num_files--;
+
+                if (verbose) {
+                    printf("Archivo '%s' eliminado del archivo empacado.\n", filename);
+                }
+
+                break;
+            }
+        }
+
+        if (!file_found) {
+            fprintf(stderr, "Archivo '%s' no encontrado en el archivo empacado.\n", filename);
+        }
+    }
+
+    // Escribir la estructura FAT actualizada en el archivo
+    fseek(archive, 0, SEEK_SET);
+    fwrite(&fat, sizeof(FAT), 1, archive);
+
+    fclose(archive);
+}
 
 
 int main(int argc, char *argv[]) {
@@ -342,6 +393,7 @@ int main(int argc, char *argv[]) {
 
     if (flags.create) create_archive(flags); 
     else if (flags.extract) extract_archive(flags.outputFile, flags.verbose, flags.veryVerbose);
+    else if (flags.delete) delete_files_from_archive(flags.outputFile, flags.inputFiles, flags.numInputFiles, flags.verbose, flags.veryVerbose);
 
     if (flags.list) list_archive_contents(flags.outputFile, flags.verbose);
 
