@@ -67,6 +67,36 @@ void expand_archive(FILE *archive, FAT *fat) {
     // meter el bloque libre a la lista secuencial de bloques libres 
 }
 
+void list_archive_contents(const char *archive_name, bool verbose) {
+    FILE *archive = fopen(archive_name, "rb");
+    if (archive == NULL) {
+        fprintf(stderr, "Error al abrir el archivo empacado.\n");
+        return;
+    }
+
+    FAT fat;
+    fread(&fat, sizeof(FAT), 1, archive);
+
+    printf("Contenido del archivo empacado:\n");
+    printf("-------------------------------\n");
+
+    for (size_t i = 0; i < fat.num_files; i++) {
+        FileEntry entry = fat.files[i];
+        printf("%s\t%zu bytes\n", entry.filename, entry.file_size);
+
+        if (verbose) {
+            printf("  Bloques: ");
+            for (size_t j = 0; j < entry.num_blocks; j++) {
+                printf("%zu ", entry.block_positions[j]);
+            }
+            printf("\n");
+        }
+    }
+
+    fclose(archive);
+}
+
+
 void write_block(FILE *archive, Block *block, size_t position) {
     fseek(archive, position, SEEK_SET); // conseguir la posicion marcada por el indice del bloque libre
     fwrite(block, sizeof(Block), 1, archive); // escribir los 256KB del bloque en el archivo
@@ -312,6 +342,8 @@ int main(int argc, char *argv[]) {
 
     if (flags.create) create_archive(flags); 
     else if (flags.extract) extract_archive(flags.outputFile, flags.verbose, flags.veryVerbose);
+
+    if (flags.list) list_archive_contents(flags.outputFile, flags.verbose);
 
     return 0;
 }
