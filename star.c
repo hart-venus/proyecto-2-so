@@ -406,6 +406,92 @@ void update_files_in_archive(const char *archive_name, char **filenames, int num
     fclose(archive);
 }
 
+void append_files_to_archive(const char *archive_name, char **filenames, int num_files, bool verbose, bool very_verbose) {
+    FILE *archive = fopen(archive_name, "rb+");
+    if (archive == NULL) {
+        fprintf(stderr, "Error al abrir el archivo empacado.\n");
+        return;
+    }
+
+    FAT fat;
+    fread(&fat, sizeof(FAT), 1, archive);
+
+    if (num_files == 0) {
+        // Leer desde la entrada estándar (stdin)
+        char *filename = "stdin";
+        size_t file_size = 0;
+        size_t block_count = 0;
+        size_t bytes_read = 0; 
+        Block block;
+        while ((bytes_read = fread(&block, 1, sizeof(Block), stdin)) > 0) {
+            size_t block_position = find_free_block(&fat);
+            if (block_position == (size_t)-1) {
+                expand_archive(archive, &fat);
+                block_position = find_free_block(&fat);
+            }
+
+            write_block(archive, &block, block_position);
+            update_fat(&fat, filename, file_size, block_position, bytes_read);
+
+            file_size += bytes_read;
+            block_count++;
+
+            if (very_verbose) {
+                printf("Bloque %zu leído desde stdin y agregado en la posición %zu\n", block_count, block_position);
+            }
+        }
+
+        if (verbose) {
+            printf("Contenido de stdin agregado al archivo empacado como '%s'.\n", filename);
+        }
+    } else {
+        // Agregar archivos especificados
+        for (int i = 0; i < num_files; i++) {
+            const char *filename = filenames[i];
+            FILE *input_file = fopen(filename, "rb");
+            if (input_file == NULL) {
+                fprintf(stderr, "Error al abrir el archivo de entrada: %s\n", filename);
+                continue;
+            }
+
+            size_t file_size = 0;
+            size_t bytes_read = 0;
+            size_t block_count = 0;
+            Block block;
+            while ((bytes_read = fread(&block, 1, sizeof(Block), input_file)) > 0) {
+                size_t block_position = find_free_block(&fat);
+                if (block_position == (size_t)-1) {
+                    expand_archive(archive, &fat);
+                    block_position = find_free_block(&fat);
+                }
+
+                write_block(archive, &block, block_position);
+                update_fat(&fat, filename, file_size, block_position, bytes_read);
+
+                file_size += bytes_read;
+                block_count++;
+
+                if (very_verbose) {
+                    printf("Bloque %zu del archivo '%s' agregado en la posición %zu\n", block_count, filename, block_position);
+                }
+            }
+
+            fclose(input_file);
+
+            if (verbose) {
+                printf("Archivo '%s' agregado al archivo empacado.\n", filename);
+            }
+        }
+    }
+
+    // Escribir la estructura FAT actualizada en el archivo
+    fseek(archive, 0, SEEK_SET);
+    fwrite(&fat, sizeof(FAT), 1, archive);
+
+    fclose(archive);
+}
+
+
 int main(int argc, char *argv[]) {
     struct Flags flags = {false, false, false, false, false, false, false, false, false, false, NULL, NULL, 0};
     int opt;
@@ -474,6 +560,7 @@ int main(int argc, char *argv[]) {
     else if (flags.extract) extract_archive(flags.outputFile, flags.verbose, flags.veryVerbose);
     else if (flags.delete) delete_files_from_archive(flags.outputFile, flags.inputFiles, flags.numInputFiles, flags.verbose, flags.veryVerbose);
     else if (flags.update) update_files_in_archive(flags.outputFile, flags.inputFiles, flags.numInputFiles, flags.verbose, flags.veryVerbose);
+    else if (flags.append) append_files_to_archive(flags.outputFile, flags.inputFiles, flags.numInputFiles, flags.verbose, flags.veryVerbose);
 
     if (flags.list) list_archive_contents(flags.outputFile, flags.verbose);
 
